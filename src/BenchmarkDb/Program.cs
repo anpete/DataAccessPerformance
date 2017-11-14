@@ -11,6 +11,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using MySql.Data.MySqlClient;
 using Npgsql;
+using Peregrine;
 
 namespace BenchmarkDb
 {
@@ -30,7 +31,8 @@ namespace BenchmarkDb
             {
                 { "ado-npgsql", NpgsqlFactory.Instance },
                 { "ado-mysql", MySqlClientFactory.Instance },
-                { "ado-sqlclient", SqlClientFactory.Instance }
+                { "ado-sqlclient", SqlClientFactory.Instance },
+                { "peregrine", null }
             };
 
         private static readonly IDictionary<string, Func<DbProviderFactory, string, Task>> _variations
@@ -39,7 +41,8 @@ namespace BenchmarkDb
                 { "sync", DoWorkSync },
                 { "sync-caching", DoWorkSyncCaching },
                 { "async", DoWorkAsync },
-                { "async-caching", DoWorkAsyncCaching }
+                { "async-caching", DoWorkAsyncCaching },
+                { "peregrine", DoPeregrine }
             };
 
         public static async Task<int> Main(string[] args)
@@ -77,7 +80,8 @@ namespace BenchmarkDb
 
             var driverName = args[0];
 
-            if (!_drivers.TryGetValue(driverName, out var driver))
+            if (!_drivers.TryGetValue(driverName, out var driver)
+                || driverName != "peregrine")
             {
                 return Help(("driver", driverName));
             }
@@ -204,6 +208,43 @@ namespace BenchmarkDb
             }
 
             return 0;
+        }
+
+        private static async Task DoPeregrine(DbProviderFactory _, string connectionString)
+        {
+            var npgsqConnectionStringBuilder
+                = new NpgsqlConnectionStringBuilder(connectionString);
+
+            using (var session = new PGSession(
+                npgsqConnectionStringBuilder.Host,
+                npgsqConnectionStringBuilder.Port,
+                npgsqConnectionStringBuilder.Database,
+                npgsqConnectionStringBuilder.Username,
+                npgsqConnectionStringBuilder.Password))
+            {
+                await session.StartAsync();
+                await session.PrepareAsync("_p0", "select id, message from fortune");
+
+                while (_stopping != 1)
+                {
+                    Interlocked.Increment(ref _counter);
+
+                    void BindColumn(object __, ReadBuffer readBuffer, int index, int length)
+                    {
+                        switch (index)
+                        {
+                            case 0:
+                                readBuffer.ReadInt();
+                                break;
+                            case 1:
+                                readBuffer.ReadString(length);
+                                break;
+                        }
+                    }
+
+                    await session.ExecuteAsync<object>("_p0", null, BindColumn);
+                }
+            }
         }
 
         private static Task DoWorkSync(DbProviderFactory providerFactory, string connectionString)
