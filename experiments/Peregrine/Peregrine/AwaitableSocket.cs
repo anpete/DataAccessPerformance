@@ -34,7 +34,21 @@ namespace Peregrine
                     };
         }
 
-        public bool IsConnected => _socket.Connected;
+        public bool IsConnected
+        {
+            get
+            {
+                try
+                {
+                    return _socket.Connected;
+                }
+                catch (SocketException)
+                {
+                    return false;
+                }
+            }
+        }
+
         public int BytesTransferred => _socketAsyncEventArgs.BytesTransferred;
 
         public void SetBuffer(byte[] buffer, int offset, int count)
