@@ -35,14 +35,13 @@ namespace Peregrine
         }
 
         public bool IsConnected => _socket.Connected;
-        public int BytesTransferred => _socketAsyncEventArgs.BytesTransferred;
 
         public void SetBuffer(byte[] buffer, int offset, int count)
         {
             _socketAsyncEventArgs.SetBuffer(buffer, offset, count);
         }
 
-        public void SetBuffer(Memory<byte> memory)
+        public void SetMemory(Memory<byte> memory)
             => _socketAsyncEventArgs.SetBuffer(memory);
 
         public AwaitableSocket ConnectAsync(CancellationToken cancellationToken)

@@ -3,14 +3,13 @@
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Net.Sockets;
 using System.Threading.Tasks;
 using Xunit;
 
 namespace Peregrine.Tests
 {
-    public class PGSessionTests
+    public class ConnectionTests
     {
         private const string Host = "127.0.0.1";
         private const int Port = 5432;
@@ -21,7 +20,7 @@ namespace Peregrine.Tests
         [Fact]
         public async Task Start_success()
         {
-            using (var session = new PGSession(Host, Port, Database, User, Password))
+            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
             {
                 Assert.False(session.IsConnected);
 
@@ -34,7 +33,7 @@ namespace Peregrine.Tests
         [Fact]
         public async Task Start_timeout_on_bad_host()
         {
-            using (var session = new PGSession("1.2.3.4", Port, Database, User, Password))
+            using (var session = new Connection(new ConnectionInfo("1.2.3.4", Port, Database, User, Password)))
             {
                 await Assert.ThrowsAsync<SocketException>(() => session.StartAsync());
             }
@@ -43,7 +42,7 @@ namespace Peregrine.Tests
         [Fact]
         public async Task Start_fail_on_bad_port()
         {
-            using (var session = new PGSession(Host, 2345, Database, User, Password))
+            using (var session = new Connection(new ConnectionInfo(Host, 2345, Database, User, Password)))
             {
                 await Assert.ThrowsAnyAsync<SocketException>(() => session.StartAsync());
             }
@@ -52,7 +51,7 @@ namespace Peregrine.Tests
         [Fact]
         public async Task Start_fail_bad_user()
         {
-            using (var session = new PGSession(Host, Port, Database, "Bad!", Password))
+            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, "Bad!", Password)))
             {
                 Assert.Equal(
                     "password authentication failed for user \"Bad!\"",
@@ -64,7 +63,7 @@ namespace Peregrine.Tests
         [Fact]
         public async Task Start_fail_bad_password()
         {
-            using (var session = new PGSession(Host, Port, Database, User, "wrong"))
+            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, "wrong")))
             {
                 Assert.Equal(
                     "password authentication failed for user \"postgres\"",
@@ -76,7 +75,7 @@ namespace Peregrine.Tests
         [Fact]
         public async Task Dispose_when_open()
         {
-            using (var session = new PGSession(Host, Port, Database, User, Password))
+            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
             {
                 await session.StartAsync();
 
@@ -91,7 +90,7 @@ namespace Peregrine.Tests
         [Fact]
         public async Task Terminate_when_open_reopen()
         {
-            using (var session = new PGSession(Host, Port, Database, User, Password))
+            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
             {
                 await session.StartAsync();
 
@@ -110,35 +109,35 @@ namespace Peregrine.Tests
         [Fact]
         public async Task Prepare_success()
         {
-            using (var session = new PGSession(Host, Port, Database, User, Password))
+            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
             {
                 await session.StartAsync();
 
-                await session.PrepareAsync("_p0", "select id, message from fortune");
+                await session.PrepareAsync(1, "select id, message from fortune");
             }
         }
 
         [Fact]
         public async Task Prepare_failure_invalid_sql()
         {
-            using (var session = new PGSession(Host, Port, Database, User, Password))
+            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
             {
                 await session.StartAsync();
 
                 Assert.Equal(
                     "syntax error at or near \"boom\"",
                     (await Assert.ThrowsAsync<InvalidOperationException>(
-                        () => session.PrepareAsync("_p0", "boom!"))).Message);
+                        () => session.PrepareAsync(1, "boom!"))).Message);
             }
         }
 
         [Fact]
         public async Task Execute_query_no_parameters_success()
         {
-            using (var session = new PGSession(Host, Port, Database, User, Password))
+            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
             {
                 await session.StartAsync();
-                await session.PrepareAsync("q", "select id, message from fortune");
+                await session.PrepareAsync(2, "select id, message from fortune");
 
                 Fortune CreateFortune(List<Fortune> results)
                 {
@@ -149,7 +148,7 @@ namespace Peregrine.Tests
                     return fortune;
                 }
 
-                void BindColumn(Fortune fortune, ReadBuffer readBuffer, int index, int length)
+                void BindColumn(Fortune fortune, MemoryReader readBuffer, int index, int length)
                 {
                     switch (index)
                     {
@@ -164,7 +163,7 @@ namespace Peregrine.Tests
 
                 var fortunes = new List<Fortune>();
 
-                await session.ExecuteAsync("q", fortunes, CreateFortune, BindColumn);
+                await session.ExecuteAsync(2, fortunes, CreateFortune, BindColumn);
 
                 Assert.Equal(12, fortunes.Count);
             }
@@ -173,10 +172,10 @@ namespace Peregrine.Tests
         [Fact]
         public async Task Execute_query_parameter_success()
         {
-            using (var session = new PGSession(Host, Port, Database, User, Password))
+            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
             {
                 await session.StartAsync();
-                await session.PrepareAsync("q", "select id, randomnumber from world where id = $1");
+                await session.PrepareAsync(2, "select id, randomnumber from world where id = $1");
 
                 World world = null;
 
@@ -187,7 +186,7 @@ namespace Peregrine.Tests
                     return world;
                 }
 
-                void BindColumn(World w, ReadBuffer readBuffer, int index, int _)
+                void BindColumn(World w, MemoryReader readBuffer, int index, int _)
                 {
                     switch (index)
                     {
@@ -200,7 +199,7 @@ namespace Peregrine.Tests
                     }
                 }
 
-                await session.ExecuteAsync("q", CreateWorld, BindColumn, 45);
+                await session.ExecuteAsync(2, CreateWorld, BindColumn, 45);
 
                 Assert.NotNull(world);
                 Assert.Equal(45, world.Id);

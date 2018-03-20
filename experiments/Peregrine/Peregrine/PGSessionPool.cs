@@ -15,7 +15,7 @@ namespace Peregrine
         private readonly string _user;
         private readonly string _password;
 
-        private readonly PGSession[] _sessions;
+        private readonly Connection[] _sessions;
 
         public PGSessionPool(
             string host,
@@ -31,12 +31,12 @@ namespace Peregrine
             _user = user;
             _password = password;
 
-            _sessions = new PGSession[maximumRetained];
+            _sessions = new Connection[maximumRetained];
         }
 
-        public Func<PGSession, Task> OnCreate { get; set; }
+        public Func<Connection, Task> OnCreate { get; set; }
 
-        public ValueTask<PGSession> Rent()
+        public ValueTask<Connection> Rent()
         {
             for (var i = 0; i < _sessions.Length; i++)
             {
@@ -45,16 +45,16 @@ namespace Peregrine
                 if (item != null
                     && Interlocked.CompareExchange(ref _sessions[i], null, item) == item)
                 {
-                    return new ValueTask<PGSession>(item);
+                    return new ValueTask<Connection>(item);
                 }
             }
 
             return CreateSession();
         }
 
-        private async ValueTask<PGSession> CreateSession()
+        private async ValueTask<Connection> CreateSession()
         {
-            var session = new PGSession(_host, _port, _database, _user, _password);
+            var session = new Connection(new ConnectionInfo(_host, _port, _database, _user, _password));
 
             await session.StartAsync();
 
@@ -66,7 +66,7 @@ namespace Peregrine
             return session;
         }
 
-        public void Return(PGSession session)
+        public void Return(Connection session)
         {
             for (var i = 0; i < _sessions.Length; i++)
             {

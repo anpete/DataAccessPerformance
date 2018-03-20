@@ -40,7 +40,7 @@ namespace BenchmarkDb
                     connectionStringBuilder.Password,
                     threadCount)
                 {
-                    OnCreate = async s => await s.PrepareAsync("q", "select id, message from fortune")
+                    OnCreate = async s => await s.PrepareAsync(1, "select id, message from fortune")
                 };
         }
 
@@ -53,15 +53,15 @@ namespace BenchmarkDb
             return fortune;
         }
 
-        private static void BindColumn(Fortune fortune, ReadBuffer readBuffer, int index, int length)
+        private static void BindColumn(Fortune fortune, MemoryReader memoryReader, int index, int length)
         {
             switch (index)
             {
                 case 0:
-                    fortune.Id = readBuffer.ReadInt();
+                    fortune.Id = memoryReader.ReadInt();
                     break;
                 case 1:
-                    fortune.Message = readBuffer.ReadString(length);
+                    fortune.Message = memoryReader.ReadString(length);
                     break;
             }
         }
@@ -76,7 +76,7 @@ namespace BenchmarkDb
 
                 try
                 {
-                    await session.ExecuteAsync("q", results, CreateFortune, BindColumn);
+                    await session.ExecuteAsync(1, results, CreateFortune, BindColumn);
                 }
                 finally
                 {
@@ -99,7 +99,7 @@ namespace BenchmarkDb
                 {
                     var results = new List<Fortune>();
 
-                    await session.ExecuteAsync("q", results, CreateFortune, BindColumn);
+                    await session.ExecuteAsync(1, results, CreateFortune, BindColumn);
 
                     CheckResults(results);
 
