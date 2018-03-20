@@ -23,6 +23,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\experiments\GoldenEagle\GoldenEagle\GoldenEagle.csproj" />
     <ProjectReference Include="..\..\experiments\Peregrine\Peregrine\Peregrine.csproj" />
   </ItemGroup>
 
