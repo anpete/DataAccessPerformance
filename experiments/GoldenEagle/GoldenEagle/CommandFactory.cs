@@ -54,6 +54,9 @@ namespace GoldenEagle
         private readonly ConnectionPool _connectionPool;
 
         private Task<ReadBuffer> _activeTask;
+        private Connection _activeConnection;
+
+        private int _awaiters;
 
         public Query(int id, string sql, Func<ValueReader, T> shaper, ConnectionPool connectionPool)
         {
@@ -69,7 +72,14 @@ namespace GoldenEagle
 
             if (activeTask != null)
             {
+                Interlocked.Increment(ref _awaiters);
+
                 var readBuffer = new ReadBuffer((await activeTask).Buffer);
+
+                if (Interlocked.Decrement(ref _awaiters) == 0)
+                {
+                    _connectionPool.Return(_activeConnection);
+                }
 
                 return Read(readBuffer);
             }
@@ -78,6 +88,7 @@ namespace GoldenEagle
 
             try
             {
+                _activeConnection = connection;
                 _activeTask = Read(connection);
 
                 var readBuffer = await _activeTask;
@@ -88,7 +99,7 @@ namespace GoldenEagle
             {
                 _activeTask = null;
 
-                if (connection != null)
+                if (_awaiters == 0)
                 {
                     _connectionPool.Return(connection);
                 }
@@ -137,20 +148,21 @@ namespace GoldenEagle
                 case MessageType.ErrorResponse:
                     throw new InvalidOperationException(readBuffer.ReadErrorMessage());
 
-                case MessageType.ParameterStatus:
-                    goto read;
-
-                case MessageType.RowDescription:
-                    goto read;
-
-                case MessageType.ReadyForQuery:
-                    goto read;
-
-                case MessageType.EmptyQueryResponse:
-                    goto read;
+//                case MessageType.ParameterStatus:
+//                    goto read;
+//
+//                case MessageType.RowDescription:
+//                    goto read;
+//
+//                case MessageType.ReadyForQuery:
+//                    goto read;
+//
+//                case MessageType.EmptyQueryResponse:
+//                    goto read;
 
                 default:
-                    throw new NotImplementedException(message.ToString());
+                    goto read;
+                   // throw new NotImplementedException(message.ToString());
             }
         }
     }
