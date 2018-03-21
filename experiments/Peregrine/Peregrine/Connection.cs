@@ -4,7 +4,6 @@
 using System;
 using System.Buffers;
 using System.Collections;
-using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -26,30 +25,15 @@ namespace Peregrine
 
         private readonly BitArray _preparedCommandMap = new BitArray(length: 100);
 
-        public Connection(ConnectionInfo connectionInfo)
+        public Connection(in ConnectionInfo connectionInfo)
         {
             _connectionInfo = connectionInfo;
         }
 
-        public bool IsConnected
-        {
-            get
-            {
-                ThrowIfDisposed();
-
-                return _socket?.IsConnected == true;
-            }
-        }
-
         public Task PrepareAsync(int commandId, string query)
-        {
-            ThrowIfDisposed();
-            ThrowIfNotConnected();
-
-            return _preparedCommandMap[commandId]
+            => _preparedCommandMap[commandId]
                 ? Task.CompletedTask
                 : PrepareSlow(commandId, query);
-        }
 
         private async Task PrepareSlow(int commandId, string query)
         {
@@ -71,22 +55,7 @@ namespace Peregrine
 
                 await _socket.ReceiveAsync();
 
-                var memoryReader = new MemoryReader(ownedMemory.Memory);
-
-                var message = memoryReader.ReadMessage();
-
-                switch (message)
-                {
-                    case MessageType.ParseComplete:
-                        _preparedCommandMap[commandId] = true;
-                        break;
-
-                    case MessageType.ErrorResponse:
-                        throw new InvalidOperationException(memoryReader.ReadErrorMessage());
-
-                    default:
-                        throw new NotImplementedException(message.ToString());
-                }
+                ParsePrepare(commandId, ownedMemory.Memory);
             }
             finally
             {
@@ -94,28 +63,37 @@ namespace Peregrine
             }
         }
 
-        public Task ExecuteAsync<TState, TResult>(
-            int commandId,
-            TState initialState,
-            Func<TState, TResult> resultFactory,
-            Action<TResult, MemoryReader, int, int> columnBinder)
+        private void ParsePrepare(int commandId, Memory<byte> memory)
         {
-            ThrowIfDisposed();
-            ThrowIfNotConnected();
+            var memoryReader = new MemoryReader(memory);
 
-            _writeBuffer
+            var message = memoryReader.ReadMessage();
+
+            switch (message)
+            {
+                case MessageType.ParseComplete:
+                    _preparedCommandMap[commandId] = true;
+                    break;
+
+                case MessageType.ErrorResponse:
+                    throw new InvalidOperationException(memoryReader.ReadErrorMessage());
+
+                default:
+                    throw new NotImplementedException(message.ToString());
+            }
+        }
+
+        public async Task ExecuteAsync<TResult>(
+            int commandId,
+            Func<ValueReader, TResult> resultFactory)
+        {
+            await _writeBuffer
                 .StartMessage('B')
                 .WriteNull()
                 .WriteString(commandId.ToString())
                 .WriteShort(1)
                 .WriteShort(1)
-                .WriteShort(0);
-
-            return WriteExecFinishAndProcess(initialState, resultFactory, columnBinder);
-        }
-
-        private AwaitableSocket WriteExecFinish()
-            => _writeBuffer
+                .WriteShort(0)
                 .WriteShort(1)
                 .WriteShort(1)
                 .EndMessage()
@@ -127,13 +105,6 @@ namespace Peregrine
                 .EndMessage()
                 .FlushAsync();
 
-        private async Task WriteExecFinishAndProcess<TState, TResult>(
-            TState initialState,
-            Func<TState, TResult> resultFactory,
-            Action<TResult, MemoryReader, int, int> columnBinder)
-        {
-            await WriteExecFinish();
-
             var ownedMemory = MemoryPool<byte>.Shared.Rent(minBufferSize: 8192);
 
             try
@@ -142,45 +113,7 @@ namespace Peregrine
 
                 await _socket.ReceiveAsync();
 
-                var memoryReader = new MemoryReader(ownedMemory.Memory);
-
-                read:
-
-                var message = memoryReader.ReadMessage();
-
-                switch (message)
-                {
-                    case MessageType.BindComplete:
-                        goto read;
-
-                    case MessageType.DataRow:
-                    {
-                        var result
-                            = resultFactory != null
-                                ? resultFactory(initialState)
-                                : default;
-
-                        var columns = memoryReader.ReadShort();
-
-                        for (var i = 0; i < columns; i++)
-                        {
-                            var length = memoryReader.ReadInt();
-
-                            columnBinder(result, memoryReader, i, length);
-                        }
-
-                        goto read;
-                    }
-
-                    case MessageType.CommandComplete:
-                        return;
-
-                    case MessageType.ErrorResponse:
-                        throw new InvalidOperationException(memoryReader.ReadErrorMessage());
-
-                    default:
-                        throw new NotImplementedException(message.ToString());
-                }
+                ParseExec(resultFactory, ownedMemory);
             }
             finally
             {
@@ -188,16 +121,44 @@ namespace Peregrine
             }
         }
 
-        public Task StartAsync(int millisecondsTimeout = DefaultConnectionTimeout)
+        private static void ParseExec<TResult>(
+            Func<ValueReader, TResult> resultFactory,
+            OwnedMemory<byte> ownedMemory)
         {
-            ThrowIfDisposed();
+            var memoryReader = new MemoryReader(ownedMemory.Memory);
 
-            return IsConnected
-                ? Task.CompletedTask
-                : StartSessionAsync(millisecondsTimeout);
+            var valueReader = new ValueReader(memoryReader);
+
+            read:
+
+            var message = memoryReader.ReadMessage();
+
+            switch (message)
+            {
+                case MessageType.BindComplete:
+                    goto read;
+
+                case MessageType.DataRow:
+                {
+                    memoryReader.SkipShort();
+
+                    resultFactory(valueReader);
+
+                    goto read;
+                }
+
+                case MessageType.CommandComplete:
+                    return;
+
+                case MessageType.ErrorResponse:
+                    throw new InvalidOperationException(memoryReader.ReadErrorMessage());
+
+                default:
+                    throw new NotImplementedException(message.ToString());
+            }
         }
 
-        private async Task StartSessionAsync(int millisecondsTimeout)
+        public async Task StartAsync(int millisecondsTimeout = DefaultConnectionTimeout)
         {
             await OpenSocketAsync(millisecondsTimeout);
 
@@ -213,63 +174,21 @@ namespace Peregrine
 
                 await _socket.ReceiveAsync();
 
-                var memoryReader = new MemoryReader(ownedMemory.Memory);
+                var salt = ParseStartup(ownedMemory.Memory);
 
-                read:
+                var hash = Hashing.CreateMD5(_connectionInfo.Password, _connectionInfo.User, salt);
 
-                var message = memoryReader.ReadMessage();
+                await _writeBuffer
+                    .StartMessage('p')
+                    .WriteBytes(hash)
+                    .EndMessage()
+                    .FlushAsync();
 
-                switch (message)
-                {
-                    case MessageType.AuthenticationRequest:
-                    {
-                        var authenticationRequestType
-                            = (AuthenticationRequestType)memoryReader.ReadInt();
+                _socket.SetMemory(ownedMemory.Memory);
 
-                        switch (authenticationRequestType)
-                        {
-                            case AuthenticationRequestType.AuthenticationOk:
-                            {
-                                return;
-                            }
+                await _socket.ReceiveAsync();
 
-                            case AuthenticationRequestType.AuthenticationMD5Password:
-                            {
-                                var salt = memoryReader.ReadBytes(4);
-                                var hash = Hashing.CreateMD5(_connectionInfo.Password, _connectionInfo.User, salt);
-
-                                await _writeBuffer
-                                    .StartMessage('p')
-                                    .WriteBytes(hash)
-                                    .EndMessage()
-                                    .FlushAsync();
-
-                                _socket.SetMemory(ownedMemory.Memory);
-
-                                memoryReader.Reset();
-
-                                await _socket.ReceiveAsync();
-
-                                goto read;
-                            }
-
-                            default:
-                                throw new NotImplementedException(authenticationRequestType.ToString());
-                        }
-                    }
-
-                    case MessageType.ErrorResponse:
-                        throw new InvalidOperationException(memoryReader.ReadErrorMessage());
-
-                    case MessageType.BackendKeyData:
-                    case MessageType.EmptyQueryResponse:
-                    case MessageType.ParameterStatus:
-                    case MessageType.ReadyForQuery:
-                        throw new NotImplementedException($"Unhandled MessageType '{message}'");
-
-                    default:
-                        throw new InvalidOperationException($"Unexpected MessageType '{message}'");
-                }
+                ParseAuthOk(ownedMemory.Memory);
             }
             finally
             {
@@ -277,27 +196,86 @@ namespace Peregrine
             }
         }
 
-        private async Task OpenSocketAsync(int millisecondsTimeout)
+        private static byte[] ParseStartup(Memory<byte> memory)
         {
-            var socket
-                = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
-                {
-                    NoDelay = true
-                };
+            var memoryReader = new MemoryReader(memory);
 
+            var message = memoryReader.ReadMessage();
+
+            switch (message)
+            {
+                case MessageType.AuthenticationRequest:
+                {
+                    var authenticationRequestType
+                        = (AuthenticationRequestType)memoryReader.ReadInt();
+
+                    switch (authenticationRequestType)
+                    {
+                        case AuthenticationRequestType.AuthenticationMD5Password:
+                        {
+                            return memoryReader.ReadBytes(4); //salt
+                        }
+
+                        default:
+                            throw new NotImplementedException(authenticationRequestType.ToString());
+                    }
+                }
+
+                case MessageType.ErrorResponse:
+                    throw new InvalidOperationException(memoryReader.ReadErrorMessage());
+
+                default:
+                    throw new InvalidOperationException($"Unexpected MessageType '{message}'");
+            }
+        }
+
+        private static void ParseAuthOk(Memory<byte> memory)
+        {
+            var memoryReader = new MemoryReader(memory);
+
+            var message = memoryReader.ReadMessage();
+
+            switch (message)
+            {
+                case MessageType.AuthenticationRequest:
+                {
+                    var authenticationRequestType
+                        = (AuthenticationRequestType)memoryReader.ReadInt();
+
+                    switch (authenticationRequestType)
+                    {
+                        case AuthenticationRequestType.AuthenticationOk:
+                        {
+                            return;
+                        }
+
+                        default:
+                            throw new NotImplementedException(authenticationRequestType.ToString());
+                    }
+                }
+
+                case MessageType.ErrorResponse:
+                    throw new InvalidOperationException(memoryReader.ReadErrorMessage());
+
+                default:
+                    throw new InvalidOperationException($"Unexpected MessageType '{message}'");
+            }
+        }
+
+        private AwaitableSocket OpenSocketAsync(int millisecondsTimeout)
+        {
             _socket
                 = new AwaitableSocket(
                     new SocketAsyncEventArgs
                     {
                         RemoteEndPoint = new IPEndPoint(IPAddress.Parse(_connectionInfo.Host), _connectionInfo.Port)
-                    },
-                    socket);
+                    });
 
             using (var cts = new CancellationTokenSource())
             {
                 cts.CancelAfter(millisecondsTimeout);
 
-                await _socket.ConnectAsync(cts.Token);
+                return _socket.ConnectAsync(cts.Token);
             }
         }
 
@@ -333,21 +311,18 @@ namespace Peregrine
 
         public void Terminate()
         {
-            if (IsConnected)
+            try
             {
-                try
-                {
-                    _writeBuffer
-                        .StartMessage('X')
-                        .EndMessage()
-                        .FlushAsync()
-                        .GetAwaiter()
-                        .GetResult();
-                }
-                catch (SocketException)
-                {
-                    // Socket may have closed
-                }
+                _writeBuffer?
+                    .StartMessage('X')
+                    .EndMessage()
+                    .FlushAsync()
+                    .GetAwaiter()
+                    .GetResult();
+            }
+            catch (SocketException)
+            {
+                // Socket may have closed
             }
 
             _socket?.Dispose();

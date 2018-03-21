@@ -11,7 +11,7 @@ namespace BenchmarkDb
 {
     public sealed class PeregrineDriver : DriverBase, IDisposable
     {
-        private PGSessionPool _sessionPool;
+        private ConnectionPool _sessionPool;
 
         public override Func<Task> TryGetVariation(string variationName)
         {
@@ -32,12 +32,13 @@ namespace BenchmarkDb
                 = new NpgsqlConnectionStringBuilder(connectionString);
 
             _sessionPool
-                = new PGSessionPool(
-                    connectionStringBuilder.Host,
-                    connectionStringBuilder.Port,
-                    connectionStringBuilder.Database,
-                    connectionStringBuilder.Username,
-                    connectionStringBuilder.Password,
+                = new ConnectionPool(
+                    new ConnectionInfo(
+                        connectionStringBuilder.Host,
+                        connectionStringBuilder.Port,
+                        connectionStringBuilder.Database,
+                        connectionStringBuilder.Username,
+                        connectionStringBuilder.Password),
                     threadCount)
                 {
                     OnCreate = async s => await s.PrepareAsync(1, "select id, message from fortune")
@@ -53,15 +54,15 @@ namespace BenchmarkDb
             return fortune;
         }
 
-        private static void BindColumn(Fortune fortune, MemoryReader memoryReader, int index, int length)
+        private static void BindColumn(Fortune fortune, ValueReader valueReader, int index)
         {
             switch (index)
             {
                 case 0:
-                    fortune.Id = memoryReader.ReadInt();
+                    fortune.Id = valueReader.ReadInt();
                     break;
                 case 1:
-                    fortune.Message = memoryReader.ReadString(length);
+                    fortune.Message = valueReader.ReadString();
                     break;
             }
         }
@@ -76,7 +77,7 @@ namespace BenchmarkDb
 
                 try
                 {
-                    await session.ExecuteAsync(1, results, CreateFortune, BindColumn);
+                    //await session.ExecuteAsync(1, results, CreateFortune, BindColumn);
                 }
                 finally
                 {
@@ -99,7 +100,7 @@ namespace BenchmarkDb
                 {
                     var results = new List<Fortune>();
 
-                    await session.ExecuteAsync(1, results, CreateFortune, BindColumn);
+                    //await session.ExecuteAsync(1, results, CreateFortune, BindColumn);
 
                     CheckResults(results);
 

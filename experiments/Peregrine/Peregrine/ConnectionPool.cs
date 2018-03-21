@@ -7,31 +7,15 @@ using System.Threading.Tasks;
 
 namespace Peregrine
 {
-    public class PGSessionPool : IDisposable
+    public class ConnectionPool : IDisposable
     {
-        private readonly string _host;
-        private readonly int _port;
-        private readonly string _database;
-        private readonly string _user;
-        private readonly string _password;
-
+        private readonly ConnectionInfo _connectionInfo;
         private readonly Connection[] _sessions;
 
-        public PGSessionPool(
-            string host,
-            int port,
-            string database,
-            string user,
-            string password,
-            int maximumRetained)
+        public ConnectionPool(in ConnectionInfo connectionInfo, int maxPoolSize)
         {
-            _host = host;
-            _port = port;
-            _database = database;
-            _user = user;
-            _password = password;
-
-            _sessions = new Connection[maximumRetained];
+            _connectionInfo = connectionInfo;
+            _sessions = new Connection[maxPoolSize];
         }
 
         public Func<Connection, Task> OnCreate { get; set; }
@@ -54,7 +38,7 @@ namespace Peregrine
 
         private async ValueTask<Connection> CreateSession()
         {
-            var session = new Connection(new ConnectionInfo(_host, _port, _database, _user, _password));
+            var session = new Connection(in _connectionInfo);
 
             await session.StartAsync();
 

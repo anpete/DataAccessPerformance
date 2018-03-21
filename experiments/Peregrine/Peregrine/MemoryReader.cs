@@ -19,15 +19,13 @@ namespace Peregrine
             _position = 0;
         }
 
-        public void Reset() => _position = 0;
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal MessageType ReadMessage()
         {
             var messageType = (MessageType)ReadByte();
 
-            // Skip length
-            _position += sizeof(int);
+            // message length
+            SkipInt();
 
             return messageType;
         }
@@ -82,6 +80,18 @@ namespace Peregrine
             _position += sizeof(int);
 
             return result;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void SkipInt()
+        {
+            _position += sizeof(int);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void SkipShort()
+        {
+            _position += sizeof(short);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

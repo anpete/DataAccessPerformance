@@ -3,7 +3,7 @@
 
 namespace Peregrine
 {
-    public class ConnectionInfo
+    public readonly struct ConnectionInfo
     {
         public ConnectionInfo(
             string host,

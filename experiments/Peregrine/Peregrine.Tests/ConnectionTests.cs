@@ -11,29 +11,18 @@ namespace Peregrine.Tests
 {
     public class ConnectionTests
     {
-        private const string Host = "127.0.0.1";
-        private const int Port = 5432;
-        private const string Database = "aspnet5-Benchmarks";
-        private const string User = "postgres";
-        private const string Password = "Password1";
-
-        [Fact]
-        public async Task Start_success()
-        {
-            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
-            {
-                Assert.False(session.IsConnected);
-
-                await session.StartAsync();
-
-                Assert.True(session.IsConnected);
-            }
-        }
+        private static readonly ConnectionInfo _connectionInfo
+            = new ConnectionInfo(
+                "127.0.0.1",
+                5432,
+                "aspnet5-Benchmarks",
+                "postgres",
+                "Password1");
 
         [Fact]
         public async Task Start_timeout_on_bad_host()
         {
-            using (var session = new Connection(new ConnectionInfo("1.2.3.4", Port, Database, User, Password)))
+            using (var session = new Connection(new ConnectionInfo("1.2.3.4", 5432, "aspnet5-Benchmarks", "postgres", "Password1")))
             {
                 await Assert.ThrowsAsync<SocketException>(() => session.StartAsync());
             }
@@ -42,7 +31,7 @@ namespace Peregrine.Tests
         [Fact]
         public async Task Start_fail_on_bad_port()
         {
-            using (var session = new Connection(new ConnectionInfo(Host, 2345, Database, User, Password)))
+            using (var session = new Connection(new ConnectionInfo("127.0.0.1", 2345, "aspnet5-Benchmarks", "postgres", "Password1")))
             {
                 await Assert.ThrowsAnyAsync<SocketException>(() => session.StartAsync());
             }
@@ -51,7 +40,7 @@ namespace Peregrine.Tests
         [Fact]
         public async Task Start_fail_bad_user()
         {
-            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, "Bad!", Password)))
+            using (var session = new Connection(new ConnectionInfo("127.0.0.1", 5432, "aspnet5-Benchmarks", "Bad!", "Password1")))
             {
                 Assert.Equal(
                     "password authentication failed for user \"Bad!\"",
@@ -63,7 +52,7 @@ namespace Peregrine.Tests
         [Fact]
         public async Task Start_fail_bad_password()
         {
-            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, "wrong")))
+            using (var session = new Connection(new ConnectionInfo("127.0.0.1", 5432, "aspnet5-Benchmarks", "postgres", "wrong")))
             {
                 Assert.Equal(
                     "password authentication failed for user \"postgres\"",
@@ -73,43 +62,9 @@ namespace Peregrine.Tests
         }
 
         [Fact]
-        public async Task Dispose_when_open()
-        {
-            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
-            {
-                await session.StartAsync();
-
-                Assert.True(session.IsConnected);
-
-                session.Dispose();
-
-                Assert.Throws<ObjectDisposedException>(() => session.IsConnected);
-            }
-        }
-
-        [Fact]
-        public async Task Terminate_when_open_reopen()
-        {
-            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
-            {
-                await session.StartAsync();
-
-                Assert.True(session.IsConnected);
-
-                session.Terminate();
-
-                Assert.False(session.IsConnected);
-
-                await session.StartAsync();
-
-                Assert.True(session.IsConnected);
-            }
-        }
-
-        [Fact]
         public async Task Prepare_success()
         {
-            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
+            using (var session = new Connection(_connectionInfo))
             {
                 await session.StartAsync();
 
@@ -120,7 +75,7 @@ namespace Peregrine.Tests
         [Fact]
         public async Task Prepare_failure_invalid_sql()
         {
-            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
+            using (var session = new Connection(_connectionInfo))
             {
                 await session.StartAsync();
 
@@ -134,78 +89,69 @@ namespace Peregrine.Tests
         [Fact]
         public async Task Execute_query_no_parameters_success()
         {
-            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
+            using (var session = new Connection(_connectionInfo))
             {
                 await session.StartAsync();
                 await session.PrepareAsync(2, "select id, message from fortune");
 
-                Fortune CreateFortune(List<Fortune> results)
-                {
-                    var fortune = new Fortune();
+                var fortunes = new List<Fortune>();
 
-                    results.Add(fortune);
+                Fortune CreateFortune(ValueReader valueReader)
+                {
+                    var fortune = new Fortune
+                    {
+                        Id = valueReader.ReadInt(),
+                        Message = valueReader.ReadString()
+                    };
+
+                    fortunes.Add(fortune);
 
                     return fortune;
                 }
 
-                void BindColumn(Fortune fortune, MemoryReader readBuffer, int index, int length)
-                {
-                    switch (index)
-                    {
-                        case 0:
-                            fortune.Id = readBuffer.ReadInt();
-                            break;
-                        case 1:
-                            fortune.Message = readBuffer.ReadString(length);
-                            break;
-                    }
-                }
-
-                var fortunes = new List<Fortune>();
-
-                await session.ExecuteAsync(2, fortunes, CreateFortune, BindColumn);
+                await session.ExecuteAsync(2, CreateFortune);
 
                 Assert.Equal(12, fortunes.Count);
             }
         }
 
-        [Fact]
-        public async Task Execute_query_parameter_success()
-        {
-            using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
-            {
-                await session.StartAsync();
-                await session.PrepareAsync(2, "select id, randomnumber from world where id = $1");
+        // [Fact]
+        // public async Task Execute_query_parameter_success()
+        // {
+        //     using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
+        //     {
+        //         await session.StartAsync();
+        //         await session.PrepareAsync(2, "select id, randomnumber from world where id = $1");
 
-                World world = null;
+        //  //         World world = null;
 
-                World CreateWorld()
-                {
-                    world = new World();
+        //  //         World CreateWorld()
+        //         {
+        //             world = new World();
 
-                    return world;
-                }
+        //  //             return world;
+        //         }
 
-                void BindColumn(World w, MemoryReader readBuffer, int index, int _)
-                {
-                    switch (index)
-                    {
-                        case 0:
-                            w.Id = readBuffer.ReadInt();
-                            break;
-                        case 1:
-                            w.RandomNumber = readBuffer.ReadInt();
-                            break;
-                    }
-                }
+        //  //         void BindColumn(World w, MemoryReader readBuffer, int index, int _)
+        //         {
+        //             switch (index)
+        //             {
+        //                 case 0:
+        //                     w.Id = readBuffer.ReadInt();
+        //                     break;
+        //                 case 1:
+        //                     w.RandomNumber = readBuffer.ReadInt();
+        //                     break;
+        //             }
+        //         }
 
-                await session.ExecuteAsync(2, CreateWorld, BindColumn, 45);
+        //  //         await session.ExecuteAsync(2, CreateWorld, BindColumn, 45);
 
-                Assert.NotNull(world);
-                Assert.Equal(45, world.Id);
-                Assert.InRange(world.RandomNumber, 1, 10000);
-            }
-        }
+        //  //         Assert.NotNull(world);
+        //         Assert.Equal(45, world.Id);
+        //         Assert.InRange(world.RandomNumber, 1, 10000);
+        //     }
+        // }
 
         public class Fortune
         {

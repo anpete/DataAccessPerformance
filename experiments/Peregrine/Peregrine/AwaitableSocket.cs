@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 
 namespace Peregrine
 {
-    public sealed class AwaitableSocket : INotifyCompletion, IDisposable
+    public sealed class AwaitableSocket : INotifyCompletion
     {
         private static readonly Action _sentinel = () => { };
 
@@ -18,28 +18,28 @@ namespace Peregrine
 
         private Action _continuation;
 
-        public AwaitableSocket(SocketAsyncEventArgs socketAsyncEventArgs, Socket socket)
+        public AwaitableSocket(SocketAsyncEventArgs socketAsyncEventArgs)
         {
+            _socket
+                = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp)
+                {
+                    NoDelay = true
+                };
+
             _socketAsyncEventArgs = socketAsyncEventArgs;
-            _socket = socket;
+            
+            socketAsyncEventArgs.Completed += OnSocketAsyncEventArgsOnCompleted;
 
-            socketAsyncEventArgs.Completed
-                += (_, __) =>
-                    {
-                        var continuation
-                            = _continuation
-                              ?? Interlocked.CompareExchange(ref _continuation, _sentinel, null);
+            void OnSocketAsyncEventArgsOnCompleted(object _, SocketAsyncEventArgs __)
+            {
+                var continuation = _continuation ?? Interlocked.CompareExchange(ref _continuation, _sentinel, null);
 
-                        continuation?.Invoke();
-                    };
+                continuation?.Invoke();
+            }
         }
-
-        public bool IsConnected => _socket.Connected;
 
         public void SetBuffer(byte[] buffer, int offset, int count)
-        {
-            _socketAsyncEventArgs.SetBuffer(buffer, offset, count);
-        }
+            => _socketAsyncEventArgs.SetBuffer(buffer, offset, count);
 
         public void SetMemory(Memory<byte> memory)
             => _socketAsyncEventArgs.SetBuffer(memory);
@@ -96,10 +96,7 @@ namespace Peregrine
             _continuation = null;
         }
 
-        public AwaitableSocket GetAwaiter()
-        {
-            return this;
-        }
+        public AwaitableSocket GetAwaiter() => this;
 
         public bool IsCompleted { get; private set; }
 
