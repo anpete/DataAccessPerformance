@@ -3,7 +3,6 @@
 
 using System;
 using System.Buffers.Binary;
-using System.Collections.Generic;
 using System.Threading.Tasks;
 using Npgsql;
 using Peregrine;
@@ -12,14 +11,13 @@ namespace BenchmarkDb
 {
     public sealed class PeregrineDriver : DriverBase, IDisposable
     {
-        private ConnectionPool _sessionPool;
+        private ConnectionPool _connectionPool;
+        private Query<Fortune> _query;
 
         public override Func<Task> TryGetVariation(string variationName)
         {
             switch (variationName)
             {
-                case Variation.Async:
-                    return DoWorkAsync;
                 case Variation.AsyncCaching:
                     return DoWorkAsyncCaching;
                 default:
@@ -32,38 +30,45 @@ namespace BenchmarkDb
             var connectionStringBuilder
                 = new NpgsqlConnectionStringBuilder(connectionString);
 
-            _sessionPool
-                = new ConnectionPool(
-                    new ConnectionInfo(
-                        connectionStringBuilder.Host,
-                        connectionStringBuilder.Port,
-                        connectionStringBuilder.Database,
-                        connectionStringBuilder.Username,
-                        connectionStringBuilder.Password),
-                    threadCount)
-                {
-                    OnCreate = async s => await s.PrepareAsync(1, "select id, message from fortune")
-                };
+            var connectionInfo
+                = new ConnectionInfo(
+                    connectionStringBuilder.Host,
+                    connectionStringBuilder.Port,
+                    connectionStringBuilder.Database,
+                    connectionStringBuilder.Username,
+                    connectionStringBuilder.Password);
+
+            _connectionPool = new ConnectionPool(connectionInfo, threadCount);
+
+            var commandFactory = new CommandFactory(_connectionPool);
+
+            _query
+                = commandFactory.CreateQuery(
+                    "select id, message from fortune",
+                    ShapeFortune);
         }
 
-        
+        private Fortune ShapeFortune(in ReadOnlySpan<byte> span, ref int offset)
+        {
+            var fortune = new Fortune();
 
-        public override async Task DoWorkAsync()
+            offset += 4;
+            fortune.Id = BinaryPrimitives.ReadInt32BigEndian(span.Slice(offset, 4));
+            offset += 4;
+
+            var length = BinaryPrimitives.ReadInt32BigEndian(span.Slice(offset, 4));
+            offset += 4;
+            fortune.Message = PG.UTF8.GetString(span.Slice(offset, length));
+            offset += length;
+
+            return fortune;
+        }
+
+        public override async Task DoWorkAsyncCaching()
         {
             while (Program.IsRunning)
             {
-                var results = new List<Fortune>();
-
-                var session = await _sessionPool.Rent();
-
-                try
-                {
-                    //await session.ExecuteAsync(1, results, CreateFortune, BindColumn);
-                }
-                finally
-                {
-                    _sessionPool.Return(session);
-                }
+                var results = await _query.ToListAsync();
 
                 CheckResults(results);
 
@@ -71,50 +76,9 @@ namespace BenchmarkDb
             }
         }
 
-        public override async Task DoWorkAsyncCaching()
-        {
-            var session = await _sessionPool.Rent();
-
-            try
-            {
-                while (Program.IsRunning)
-                {
-                    var results = new List<Fortune>();
-
-                    Fortune ShapeFortune(in ReadOnlySpan<byte> span, ref int offset)
-                    {
-                        var fortune = new Fortune();
-
-                        offset += 4;
-                        fortune.Id = BinaryPrimitives.ReadInt32BigEndian(span.Slice(offset, 4));
-                        offset += 4;
-            
-                        var length = BinaryPrimitives.ReadInt32BigEndian(span.Slice(offset, 4));
-                        offset += 4;
-                        fortune.Message = PG.UTF8.GetString(span.Slice(offset, length));
-                        offset += length;
-
-                        results.Add(fortune);
-                    
-                        return fortune;
-                    }
-
-                    await session.ExecuteAsync(1, ShapeFortune);
-
-                    CheckResults(results);
-
-                    Program.IncrementCounter();
-                }
-            }
-            finally
-            {
-                _sessionPool.Return(session);
-            }
-        }
-
         public void Dispose()
         {
-            _sessionPool?.Dispose();
+            _connectionPool?.Dispose();
         }
     }
 }

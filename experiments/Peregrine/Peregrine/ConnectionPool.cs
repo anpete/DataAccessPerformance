@@ -10,64 +10,57 @@ namespace Peregrine
     public class ConnectionPool : IDisposable
     {
         private readonly ConnectionInfo _connectionInfo;
-        private readonly Connection[] _sessions;
+        private readonly Connection[] _connections;
 
         public ConnectionPool(in ConnectionInfo connectionInfo, int maxPoolSize)
         {
             _connectionInfo = connectionInfo;
-            _sessions = new Connection[maxPoolSize];
+            _connections = new Connection[maxPoolSize];
         }
-
-        public Func<Connection, Task> OnCreate { get; set; }
 
         public ValueTask<Connection> Rent()
         {
-            for (var i = 0; i < _sessions.Length; i++)
+            for (var i = 0; i < _connections.Length; i++)
             {
-                var item = _sessions[i];
+                var item = _connections[i];
 
                 if (item != null
-                    && Interlocked.CompareExchange(ref _sessions[i], null, item) == item)
+                    && Interlocked.CompareExchange(ref _connections[i], value: null, item) == item)
                 {
                     return new ValueTask<Connection>(item);
                 }
             }
 
-            return CreateSession();
+            return CreateConnection();
         }
 
-        private async ValueTask<Connection> CreateSession()
+        private async ValueTask<Connection> CreateConnection()
         {
             var session = new Connection(in _connectionInfo);
 
             await session.OpenAsync();
 
-            if (OnCreate != null)
-            {
-                await OnCreate.Invoke(session);
-            }
-
             return session;
         }
 
-        public void Return(Connection session)
+        public void Return(Connection connection)
         {
-            for (var i = 0; i < _sessions.Length; i++)
+            for (var i = 0; i < _connections.Length; i++)
             {
-                if (Interlocked.CompareExchange(ref _sessions[i], session, null) == null)
+                if (Interlocked.CompareExchange(ref _connections[i], connection, comparand: null) == null)
                 {
                     return;
                 }
             }
 
-            session.Dispose();
+            connection.Dispose();
         }
 
         public void Dispose()
         {
-            for (var i = 0; i < _sessions.Length; i++)
+            for (var i = 0; i < _connections.Length; i++)
             {
-                _sessions[i]?.Dispose();
+                _connections[i]?.Dispose();
             }
         }
     }

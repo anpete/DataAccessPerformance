@@ -27,12 +27,14 @@ namespace Peregrine
                 };
 
             _socketAsyncEventArgs = socketAsyncEventArgs;
-            
+
             socketAsyncEventArgs.Completed += OnSocketAsyncEventArgsOnCompleted;
 
             void OnSocketAsyncEventArgsOnCompleted(object _, SocketAsyncEventArgs __)
             {
-                var continuation = _continuation ?? Interlocked.CompareExchange(ref _continuation, _sentinel, null);
+                var continuation
+                    = _continuation
+                      ?? Interlocked.CompareExchange(ref _continuation, _sentinel, comparand: null);
 
                 continuation?.Invoke();
             }

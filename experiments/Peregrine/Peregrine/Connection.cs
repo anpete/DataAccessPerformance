@@ -6,14 +6,12 @@ using System.Buffers;
 using System.Collections;
 using System.Net;
 using System.Net.Sockets;
-using System.Reflection.Emit;
-using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace Peregrine
 {
-    public class Connection : IDisposable
+    public class Connection
     {
         private const int DefaultConnectionTimeout = 2000; // ms
 
@@ -32,7 +30,7 @@ namespace Peregrine
             _connectionInfo = connectionInfo;
         }
 
-        public Task PrepareAsync(int commandId, string query)
+        public Task EnsurePreparedAsync(int commandId, string query)
             => _preparedCommandMap[commandId]
                 ? Task.CompletedTask
                 : PrepareSlow(commandId, query);
@@ -80,16 +78,12 @@ namespace Peregrine
             }
         }
 
-        public delegate TResult ResultFactoryDelegate<out TResult>(in ReadOnlySpan<byte> span, ref int offset);
-
-        public async Task ExecuteAsync<TResult>(
-            int commandId,
-            ResultFactoryDelegate<TResult> resultFactory)
+        public async Task ExecuteAsync(int statementId, Memory<byte> memory)
         {
             await _writeBuffer
                 .StartMessage('B')
                 .WriteNull()
-                .WriteString(commandId.ToString())
+                .WriteString(statementId.ToString())
                 .WriteShort(1)
                 .WriteShort(1)
                 .WriteShort(0)
@@ -104,97 +98,9 @@ namespace Peregrine
                 .EndMessage()
                 .FlushAsync();
 
-            var ownedMemory = MemoryPool<byte>.Shared.Rent(minBufferSize: 8192);
+            _socket.SetMemory(memory);
 
-            try
-            {
-                _socket.SetMemory(ownedMemory.Memory);
-
-                await _socket.ReceiveAsync();
-
-                var offset = 0;
-
-                read:
-
-                var message = ReadMessage(ownedMemory.Memory, ref offset);
-
-                switch (message)
-                {
-                    case MessageType.BindComplete:
-                        goto read;
-
-                    case MessageType.DataRow:
-                    {
-                        offset += sizeof(short);
-
-                        resultFactory(ownedMemory.Memory.Span, ref offset);
-
-                        goto read;
-                    }
-
-                    case MessageType.CommandComplete:
-                        return;
-
-                    case MessageType.ErrorResponse:
-                        throw new InvalidOperationException(ReadErrorMessage(ownedMemory.Memory, ref offset));
-
-                    default:
-                        throw new NotImplementedException(message.ToString());
-                }
-            }
-            finally
-            {
-                ownedMemory.Release();
-            }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static MessageType ReadMessage(Memory<byte> memory, ref int offset)
-        {
-            var messageType = (MessageType)memory.Span[offset++];
-
-            // message length
-            offset += sizeof(int);
-
-            return messageType;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static string ReadErrorMessage(Memory<byte> memory, ref int offset)
-        {
-            string message = null;
-
-            read:
-
-            var code = (ErrorFieldTypeCode)memory.Span[offset++];
-
-            switch (code)
-            {
-                case ErrorFieldTypeCode.Done:
-                    break;
-                case ErrorFieldTypeCode.Message:
-                    message = ReadNullTerminatedString(memory, ref offset);
-                    break;
-                default:
-                    ReadNullTerminatedString(memory, ref offset);
-                    goto read;
-            }
-
-            return message;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static string ReadNullTerminatedString(Memory<byte> memory, ref int offset)
-        {
-            var start = offset;
-            var span = memory.Span;
-
-            while (span[offset++] != 0
-                   && offset < memory.Length)
-            {
-            }
-
-            return PG.UTF8.GetString(span.Slice(start, offset - start - 1));
+            await _socket.ReceiveAsync();
         }
 
         public async Task OpenAsync(int millisecondsTimeout = DefaultConnectionTimeout)

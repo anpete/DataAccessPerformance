@@ -3,7 +3,7 @@
 
 using System;
 using System.Buffers.Binary;
-using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -19,99 +19,67 @@ namespace Peregrine.Tests
                 "postgres",
                 "Password1");
 
-        [Fact]
-        public async Task Prepare_success()
+        private Fortune ShapeFortune(in ReadOnlySpan<byte> span, ref int offset)
         {
-            using (var session = new Connection(_connectionInfo))
-            {
-                await session.OpenAsync();
+            var fortune = new Fortune();
 
-                await session.PrepareAsync(1, "select id, message from fortune");
-            }
+            offset += 4;
+            fortune.Id = BinaryPrimitives.ReadInt32BigEndian(span.Slice(offset, 4));
+            offset += 4;
+
+            var length = BinaryPrimitives.ReadInt32BigEndian(span.Slice(offset, 4));
+            offset += 4;
+            fortune.Message = PG.UTF8.GetString(span.Slice(offset, length));
+            offset += length;
+
+            return fortune;
         }
 
         [Fact]
         public async Task Execute_query_no_parameters_success()
         {
-            using (var session = new Connection(_connectionInfo))
-            {
-                await session.OpenAsync();
-                await session.PrepareAsync(2, "select id, message from fortune");
+            var commandFactory = new CommandFactory(new ConnectionPool(_connectionInfo, 32));
 
-                var fortunes = new List<Fortune>();
+            var query
+                = commandFactory.CreateQuery(
+                    "select id, message from fortune",
+                    ShapeFortune);
 
-                Fortune ShapeFortune(in ReadOnlySpan<byte> span, ref int offset)
-                {
-                    var fortune = new Fortune();
+            var fortunes = await query.ToListAsync();
 
-                    offset += 4;
-                    fortune.Id = BinaryPrimitives.ReadInt32BigEndian(span.Slice(offset, 4));
-                    offset += 4;
-            
-                    var length = BinaryPrimitives.ReadInt32BigEndian(span.Slice(offset, 4));
-                    offset += 4;
-                    fortune.Message = PG.UTF8.GetString(span.Slice(offset, length));
-                    offset += length;
-
-                    fortunes.Add(fortune);
-                    
-                    return fortune;
-                }
-
-                await session.ExecuteAsync(2, ShapeFortune);
-
-                Assert.Equal(12, fortunes.Count);
-            }
+            Assert.Equal(12, fortunes.Count);
         }
 
-        // [Fact]
-        // public async Task Execute_query_parameter_success()
-        // {
-        //     using (var session = new Connection(new ConnectionInfo(Host, Port, Database, User, Password)))
-        //     {
-        //         await session.StartAsync();
-        //         await session.PrepareAsync(2, "select id, randomnumber from world where id = $1");
+        [Fact]
+        public async Task Multi_threaded()
+        {
+            var commandFactory = new CommandFactory(new ConnectionPool(_connectionInfo, 32));
 
-        //  //         World world = null;
+            var query
+                = commandFactory.CreateQuery(
+                    "select id, message from fortune",
+                    ShapeFortune);
 
-        //  //         World CreateWorld()
-        //         {
-        //             world = new World();
+            await Task.WhenAll(
+                Enumerable
+                    .Range(0, 32)
+                    .Select(
+                        _ => Task.Run(
+                            async () =>
+                                {
+                                    for (var i = 0; i < 1000; i++)
+                                    {
+                                        var results = await query.ToListAsync();
 
-        //  //             return world;
-        //         }
-
-        //  //         void BindColumn(World w, MemoryReader readBuffer, int index, int _)
-        //         {
-        //             switch (index)
-        //             {
-        //                 case 0:
-        //                     w.Id = readBuffer.ReadInt();
-        //                     break;
-        //                 case 1:
-        //                     w.RandomNumber = readBuffer.ReadInt();
-        //                     break;
-        //             }
-        //         }
-
-        //  //         await session.ExecuteAsync(2, CreateWorld, BindColumn, 45);
-
-        //  //         Assert.NotNull(world);
-        //         Assert.Equal(45, world.Id);
-        //         Assert.InRange(world.RandomNumber, 1, 10000);
-        //     }
-        // }
+                                        Assert.Equal(12, results.Count);
+                                    }
+                                })));
+        }
 
         public class Fortune
         {
             public int Id { get; set; }
             public string Message { get; set; }
-        }
-
-        public class World
-        {
-            public int Id { get; set; }
-            public int RandomNumber { get; set; }
         }
     }
 }
