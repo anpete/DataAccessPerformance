@@ -6,6 +6,8 @@ using System.Buffers;
 using System.Collections;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -55,7 +57,22 @@ namespace Peregrine
 
                 await _socket.ReceiveAsync();
 
-                ParsePrepare(commandId, ownedMemory.Memory);
+                var memoryReader = new MemoryReader(ownedMemory.Memory);
+
+                var message = memoryReader.ReadMessage();
+
+                switch (message)
+                {
+                    case MessageType.ParseComplete:
+                        _preparedCommandMap[commandId] = true;
+                        break;
+
+                    case MessageType.ErrorResponse:
+                        throw new InvalidOperationException(memoryReader.ReadErrorMessage());
+
+                    default:
+                        throw new NotImplementedException(message.ToString());
+                }
             }
             finally
             {
@@ -63,29 +80,11 @@ namespace Peregrine
             }
         }
 
-        private void ParsePrepare(int commandId, Memory<byte> memory)
-        {
-            var memoryReader = new MemoryReader(memory);
-
-            var message = memoryReader.ReadMessage();
-
-            switch (message)
-            {
-                case MessageType.ParseComplete:
-                    _preparedCommandMap[commandId] = true;
-                    break;
-
-                case MessageType.ErrorResponse:
-                    throw new InvalidOperationException(memoryReader.ReadErrorMessage());
-
-                default:
-                    throw new NotImplementedException(message.ToString());
-            }
-        }
+        public delegate TResult ResultFactoryDelegate<out TResult>(in ReadOnlySpan<byte> span, ref int offset);
 
         public async Task ExecuteAsync<TResult>(
             int commandId,
-            Func<ValueReader, TResult> resultFactory)
+            ResultFactoryDelegate<TResult> resultFactory)
         {
             await _writeBuffer
                 .StartMessage('B')
@@ -113,7 +112,35 @@ namespace Peregrine
 
                 await _socket.ReceiveAsync();
 
-                ParseExec(resultFactory, ownedMemory);
+                var offset = 0;
+
+                read:
+
+                var message = ReadMessage(ownedMemory.Memory, ref offset);
+
+                switch (message)
+                {
+                    case MessageType.BindComplete:
+                        goto read;
+
+                    case MessageType.DataRow:
+                    {
+                        offset += sizeof(short);
+
+                        resultFactory(ownedMemory.Memory.Span, ref offset);
+
+                        goto read;
+                    }
+
+                    case MessageType.CommandComplete:
+                        return;
+
+                    case MessageType.ErrorResponse:
+                        throw new InvalidOperationException(ReadErrorMessage(ownedMemory.Memory, ref offset));
+
+                    default:
+                        throw new NotImplementedException(message.ToString());
+                }
             }
             finally
             {
@@ -121,44 +148,56 @@ namespace Peregrine
             }
         }
 
-        private static void ParseExec<TResult>(
-            Func<ValueReader, TResult> resultFactory,
-            OwnedMemory<byte> ownedMemory)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static MessageType ReadMessage(Memory<byte> memory, ref int offset)
         {
-            var memoryReader = new MemoryReader(ownedMemory.Memory);
+            var messageType = (MessageType)memory.Span[offset++];
 
-            var valueReader = new ValueReader(memoryReader);
+            // message length
+            offset += sizeof(int);
+
+            return messageType;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static string ReadErrorMessage(Memory<byte> memory, ref int offset)
+        {
+            string message = null;
 
             read:
 
-            var message = memoryReader.ReadMessage();
+            var code = (ErrorFieldTypeCode)memory.Span[offset++];
 
-            switch (message)
+            switch (code)
             {
-                case MessageType.BindComplete:
-                    goto read;
-
-                case MessageType.DataRow:
-                {
-                    memoryReader.SkipShort();
-
-                    resultFactory(valueReader);
-
-                    goto read;
-                }
-
-                case MessageType.CommandComplete:
-                    return;
-
-                case MessageType.ErrorResponse:
-                    throw new InvalidOperationException(memoryReader.ReadErrorMessage());
-
+                case ErrorFieldTypeCode.Done:
+                    break;
+                case ErrorFieldTypeCode.Message:
+                    message = ReadNullTerminatedString(memory, ref offset);
+                    break;
                 default:
-                    throw new NotImplementedException(message.ToString());
+                    ReadNullTerminatedString(memory, ref offset);
+                    goto read;
             }
+
+            return message;
         }
 
-        public async Task StartAsync(int millisecondsTimeout = DefaultConnectionTimeout)
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static string ReadNullTerminatedString(Memory<byte> memory, ref int offset)
+        {
+            var start = offset;
+            var span = memory.Span;
+
+            while (span[offset++] != 0
+                   && offset < memory.Length)
+            {
+            }
+
+            return PG.UTF8.GetString(span.Slice(start, offset - start - 1));
+        }
+
+        public async Task OpenAsync(int millisecondsTimeout = DefaultConnectionTimeout)
         {
             await OpenSocketAsync(millisecondsTimeout);
 

@@ -40,7 +40,7 @@ namespace Peregrine
         {
             var session = new Connection(in _connectionInfo);
 
-            await session.StartAsync();
+            await session.OpenAsync();
 
             if (OnCreate != null)
             {

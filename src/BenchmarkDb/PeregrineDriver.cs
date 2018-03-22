@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Npgsql;
@@ -45,27 +46,7 @@ namespace BenchmarkDb
                 };
         }
 
-        private static Fortune CreateFortune(List<Fortune> results)
-        {
-            var fortune = new Fortune();
-
-            results.Add(fortune);
-
-            return fortune;
-        }
-
-        private static void BindColumn(Fortune fortune, ValueReader valueReader, int index)
-        {
-            switch (index)
-            {
-                case 0:
-                    fortune.Id = valueReader.ReadInt();
-                    break;
-                case 1:
-                    fortune.Message = valueReader.ReadString();
-                    break;
-            }
-        }
+        
 
         public override async Task DoWorkAsync()
         {
@@ -100,7 +81,25 @@ namespace BenchmarkDb
                 {
                     var results = new List<Fortune>();
 
-                    //await session.ExecuteAsync(1, results, CreateFortune, BindColumn);
+                    Fortune ShapeFortune(in ReadOnlySpan<byte> span, ref int offset)
+                    {
+                        var fortune = new Fortune();
+
+                        offset += 4;
+                        fortune.Id = BinaryPrimitives.ReadInt32BigEndian(span.Slice(offset, 4));
+                        offset += 4;
+            
+                        var length = BinaryPrimitives.ReadInt32BigEndian(span.Slice(offset, 4));
+                        offset += 4;
+                        fortune.Message = PG.UTF8.GetString(span.Slice(offset, length));
+                        offset += length;
+
+                        results.Add(fortune);
+                    
+                        return fortune;
+                    }
+
+                    await session.ExecuteAsync(1, ShapeFortune);
 
                     CheckResults(results);
 

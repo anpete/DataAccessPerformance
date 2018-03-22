@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0. See License.txt in the project root for license information.
 
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
-using System.Net.Sockets;
 using System.Threading.Tasks;
 using Xunit;
 
@@ -20,69 +20,13 @@ namespace Peregrine.Tests
                 "Password1");
 
         [Fact]
-        public async Task Start_timeout_on_bad_host()
-        {
-            using (var session = new Connection(new ConnectionInfo("1.2.3.4", 5432, "aspnet5-Benchmarks", "postgres", "Password1")))
-            {
-                await Assert.ThrowsAsync<SocketException>(() => session.StartAsync());
-            }
-        }
-
-        [Fact]
-        public async Task Start_fail_on_bad_port()
-        {
-            using (var session = new Connection(new ConnectionInfo("127.0.0.1", 2345, "aspnet5-Benchmarks", "postgres", "Password1")))
-            {
-                await Assert.ThrowsAnyAsync<SocketException>(() => session.StartAsync());
-            }
-        }
-
-        [Fact]
-        public async Task Start_fail_bad_user()
-        {
-            using (var session = new Connection(new ConnectionInfo("127.0.0.1", 5432, "aspnet5-Benchmarks", "Bad!", "Password1")))
-            {
-                Assert.Equal(
-                    "password authentication failed for user \"Bad!\"",
-                    (await Assert.ThrowsAsync<InvalidOperationException>(
-                        () => session.StartAsync())).Message);
-            }
-        }
-
-        [Fact]
-        public async Task Start_fail_bad_password()
-        {
-            using (var session = new Connection(new ConnectionInfo("127.0.0.1", 5432, "aspnet5-Benchmarks", "postgres", "wrong")))
-            {
-                Assert.Equal(
-                    "password authentication failed for user \"postgres\"",
-                    (await Assert.ThrowsAsync<InvalidOperationException>(
-                        () => session.StartAsync())).Message);
-            }
-        }
-
-        [Fact]
         public async Task Prepare_success()
         {
             using (var session = new Connection(_connectionInfo))
             {
-                await session.StartAsync();
+                await session.OpenAsync();
 
                 await session.PrepareAsync(1, "select id, message from fortune");
-            }
-        }
-
-        [Fact]
-        public async Task Prepare_failure_invalid_sql()
-        {
-            using (var session = new Connection(_connectionInfo))
-            {
-                await session.StartAsync();
-
-                Assert.Equal(
-                    "syntax error at or near \"boom\"",
-                    (await Assert.ThrowsAsync<InvalidOperationException>(
-                        () => session.PrepareAsync(1, "boom!"))).Message);
             }
         }
 
@@ -91,25 +35,30 @@ namespace Peregrine.Tests
         {
             using (var session = new Connection(_connectionInfo))
             {
-                await session.StartAsync();
+                await session.OpenAsync();
                 await session.PrepareAsync(2, "select id, message from fortune");
 
                 var fortunes = new List<Fortune>();
 
-                Fortune CreateFortune(ValueReader valueReader)
+                Fortune ShapeFortune(in ReadOnlySpan<byte> span, ref int offset)
                 {
-                    var fortune = new Fortune
-                    {
-                        Id = valueReader.ReadInt(),
-                        Message = valueReader.ReadString()
-                    };
+                    var fortune = new Fortune();
+
+                    offset += 4;
+                    fortune.Id = BinaryPrimitives.ReadInt32BigEndian(span.Slice(offset, 4));
+                    offset += 4;
+            
+                    var length = BinaryPrimitives.ReadInt32BigEndian(span.Slice(offset, 4));
+                    offset += 4;
+                    fortune.Message = PG.UTF8.GetString(span.Slice(offset, length));
+                    offset += length;
 
                     fortunes.Add(fortune);
-
+                    
                     return fortune;
                 }
 
-                await session.ExecuteAsync(2, CreateFortune);
+                await session.ExecuteAsync(2, ShapeFortune);
 
                 Assert.Equal(12, fortunes.Count);
             }
